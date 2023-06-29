@@ -7,7 +7,7 @@ import natsort
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from torch import nn
+from torch import e, nn
 
 import numpy as np
 import time
@@ -221,18 +221,25 @@ class ResNet_compat(nn.Module):
         x=self.conv1(x)
         # print(x.shape)
 
-        # model body
+        block_counter=0
+        # model body [4, 8, 14]는 stride를 줄여야 하는 block
         for block in self.block_forms:
-            block= block # 만약 구조적 문제가 해결되면 삭제 시도해볼 것
+            block_counter+=1
+            if block_counter in [4, 8, 14]:
+              reduce_stride=2
+            else:
+              reduce_stride=1
+
+            # block= block # 만약 구조적 문제가 해결되면 삭제 시도해볼 것
             identity=x
             x=block(x)
 
-            if block[0].in_channels != block[0].out_channels:
+            if block[0].in_channels != block[-2].out_channels:
                 self.reduce=nn.Conv2d(
                     block[0].in_channels,
-                    block[0].out_channels,
+                    block[-2].out_channels,
                     kernel_size=(1,1),
-                    stride=2).to(device)
+                    stride=reduce_stride).to(device)
                 identity=self.reduce(identity)
 
             x+=identity

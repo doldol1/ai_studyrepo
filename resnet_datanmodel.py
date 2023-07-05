@@ -105,6 +105,7 @@ class ResNet_compat(nn.Module):
                  kernel_sizes=[(3,3), (3,3), (3,3), (3,3)],
                  channel_sizes=[(64,64), (128,128), (256,256), (512,512)],
                  class_size=2,
+                 is_18=False,
                  is_plain=False):
 
         super(ResNet_compat, self).__init__()
@@ -116,6 +117,11 @@ class ResNet_compat(nn.Module):
         self.channel_sizes=channel_sizes
         self.class_size=class_size
         self.is_plain=is_plain
+
+        if is_18:
+          self.block_group_num=[3, 5, 7]
+        else:
+          self.block_group_num=[4, 8, 14]
 
 
         # pytorch에도 padding='same'이라는 옵션은 존재하지만, stride=1일
@@ -222,10 +228,10 @@ class ResNet_compat(nn.Module):
         # print(x.shape)
 
         block_counter=0
-        # model body [4, 8, 14]는 stride를 줄여야 하는 block
+        # model body self.block_group는 stride를 줄여야 하는 block
         for block in self.block_forms:
             block_counter+=1
-            if block_counter in [4, 8, 14]:
+            if block_counter in self.block_group_num:
               reduce_stride=2
             else:
               reduce_stride=1
@@ -258,4 +264,189 @@ class ResNet_compat(nn.Module):
 
         # return self.conv_temp(x)
 
-        pass
+import torch.nn.functional as F
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+    def __init__(self, in_channels, out_channels, i_downsample=None, stride=1):
+        super(Bottleneck, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
+        self.batch_norm1 = nn.BatchNorm2d(out_channels)
+        
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.batch_norm2 = nn.BatchNorm2d(out_channels)
+        
+        self.conv3 = nn.Conv2d(out_channels, out_channels*self.expansion, kernel_size=1, stride=1, padding=0)
+        self.batch_norm3 = nn.BatchNorm2d(out_channels*self.expansion)
+        
+        self.i_downsample = i_downsample
+        self.stride = stride
+        self.relu = nn.ReLU()
+        
+    def forward(self, x):
+        identity = x.clone()
+        x = self.relu(self.batch_norm1(self.conv1(x)))
+        
+        x = self.relu(self.batch_norm2(self.conv2(x)))
+        
+        x = self.conv3(x)
+        x = self.batch_norm3(x)
+        
+        #downsample if needed
+        if self.i_downsample is not None:
+            identity = self.i_downsample(identity)
+        #add identity
+        x+=identity
+        x=self.relu(x)
+        
+        return x
+
+class Block(nn.Module):
+    expansion = 1
+    def __init__(self, in_channels, out_channels, i_downsample=None, stride=1):
+        super(Block, self).__init__()
+       
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=stride, bias=False)
+        self.batch_norm1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, stride=stride, bias=False)
+        self.batch_norm2 = nn.BatchNorm2d(out_channels)
+
+        self.i_downsample = i_downsample
+        self.stride = stride
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+      identity = x.clone()
+
+      x = self.relu(self.batch_norm2(self.conv1(x)))
+      x = self.batch_norm2(self.conv2(x))
+
+      if self.i_downsample is not None:
+          identity = self.i_downsample(identity)
+      print(x.shape)
+      print(identity.shape)
+      x += identity
+      x = self.relu(x)
+      return x
+
+
+        
+############## github에서 가져온 모델, 모델 로딩 문제 때문에 부득이하게 가져옴 ###################
+class ResNet(nn.Module):
+    def __init__(self, ResBlock, layer_list, num_classes, num_channels=3):
+        super(ResNet, self).__init__()
+        self.in_channels = 64
+        
+        self.conv1 = nn.Conv2d(num_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.batch_norm1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.max_pool = nn.MaxPool2d(kernel_size = 3, stride=2, padding=1)
+        
+        self.layer1 = self._make_layer(ResBlock, layer_list[0], planes=64)
+        self.layer2 = self._make_layer(ResBlock, layer_list[1], planes=128, stride=2)
+        self.layer3 = self._make_layer(ResBlock, layer_list[2], planes=256, stride=2)
+        self.layer4 = self._make_layer(ResBlock, layer_list[3], planes=512, stride=2)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.fc = nn.Linear(512*ResBlock.expansion, num_classes)
+        
+    def forward(self, x):
+        x = self.relu(self.batch_norm1(self.conv1(x)))
+        x = self.max_pool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        
+        x = self.avgpool(x)
+        x = x.reshape(x.shape[0], -1)
+        x = self.fc(x)
+        
+        return x
+        
+    def _make_layer(self, ResBlock, blocks, planes, stride=1):
+        ii_downsample = None
+        layers = []
+        
+        if stride != 1 or self.in_channels != planes*ResBlock.expansion:
+            ii_downsample = nn.Sequential(
+                nn.Conv2d(self.in_channels, planes*ResBlock.expansion, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(planes*ResBlock.expansion)
+            )
+            
+        layers.append(ResBlock(self.in_channels, planes, i_downsample=ii_downsample, stride=stride))
+        self.in_channels = planes*ResBlock.expansion
+        
+        for i in range(blocks-1):
+            layers.append(ResBlock(self.in_channels, planes))
+            
+        return nn.Sequential(*layers)
+
+        
+        
+def ResNet50(num_classes, channels=3):
+    return ResNet(Bottleneck, [3,4,6,3], num_classes, channels)
+    
+def ResNet101(num_classes, channels=3):
+    return ResNet(Bottleneck, [3,4,23,3], num_classes, channels)
+
+def ResNet152(num_classes, channels=3):
+    return ResNet(Bottleneck, [3,8,36,3], num_classes, channels)
+################################################################################
+
+
+def resnet_model_loader(num, source='home'):
+  if num==18:
+    test_model=ResNet_compat(blocks_in_model=[2, 2, 2, 2,],
+                                        is_18=True).to(device)
+  elif num==34:
+    test_model=ResNet_compat().to(device)
+  elif num==50:
+    if source=='home':
+      test_model=ResNet_compat(blocks_in_model=[3, 4, 6, 3],
+                              layers_in_block=[3, 3, 3, 3],
+                              kernel_sizes=[(1,3,1), (1,3,1), (1,3,1), (1,3,1)],
+                              channel_sizes=[(64,64,256), (128,128,512), (256,256,1024), (512,512, 2048)]).to(device)
+    elif source=='git':
+      test_model=ResNet50(2).to(device)
+  else:
+    print('Not supported model')
+  
+  return test_model        
+
+
+### gpu-cpu, single-multi core 상관 없이 weight를 불러옴
+def weight_loader(device, test_model, epoch_path):
+    # GPU 사용 불가시
+    if device=='cpu':
+      loaded_weight=torch.load(epoch_path, map_location=torch.device('cpu'))
+      if isinstance(test_model,nn.DataParallel):
+        print('cpu 병렬')
+      else:
+        print('cpu 병렬 x')
+
+    # GPU 사용 가능시
+    else:
+      loaded_weight=torch.load(epoch_path)
+      if isinstance(test_model,nn.DataParallel):
+        print('gpu 병렬')
+      else:
+        print('gpu 병렬 x')
+
+
+    model_key=test_model.state_dict().keys()
+    weight_key=loaded_weight.keys()
+
+    diff_list=list()
+    for key in weight_key:
+      if key not in model_key:
+        diff_list.append(key)
+
+    for diff_key in diff_list:
+      del loaded_weight[diff_key]
+
+    return loaded_weight

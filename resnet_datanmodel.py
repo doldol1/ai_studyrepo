@@ -241,11 +241,17 @@ class ResNet_compat(nn.Module):
             x=block(x)
 
             if block[0].in_channels != block[-2].out_channels:
-                self.reduce=nn.Conv2d(
-                    block[0].in_channels,
-                    block[-2].out_channels,
-                    kernel_size=(1,1),
-                    stride=reduce_stride).to(device)
+                self.reduce=nn.Sequential(
+                  nn.Conv2d(block[0].in_channels,
+                            block[-2].out_channels,
+                            kernel_size=(1,1),
+                            stride=reduce_stride),
+                  nn.BatchNorm2d(block[-2].out_channels, 
+                                 eps=1e-05, 
+                                 momentum=0.1, 
+                                 affine=True, 
+                                 track_running_stats=True)
+                            ).to(device)
                 identity=self.reduce(identity)
 
             x+=identity
@@ -264,8 +270,10 @@ class ResNet_compat(nn.Module):
 
         # return self.conv_temp(x)
 
-import torch.nn.functional as F
 
+
+############## github에서 가져온 모델, 모델 로딩 문제 때문에 부득이하게 가져옴 ###################
+import torch.nn.functional as F
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -333,8 +341,6 @@ class Block(nn.Module):
       return x
 
 
-        
-############## github에서 가져온 모델, 모델 로딩 문제 때문에 부득이하게 가져옴 ###################
 class ResNet(nn.Module):
     def __init__(self, ResBlock, layer_list, num_classes, num_channels=3):
         super(ResNet, self).__init__()
